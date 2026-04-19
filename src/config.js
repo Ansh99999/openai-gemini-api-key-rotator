@@ -26,32 +26,32 @@ class Config {
     const envContent = fs.readFileSync(envPath, 'utf8');
     const envVars = this.parseEnvFile(envContent);
 
-    // Check required fields FIRST
+    // Resolve port: .env takes priority, then process.env, then fail
+    const port = envVars.PORT || process.env.PORT;
+    const adminPassword = envVars.ADMIN_PASSWORD || process.env.ADMIN_PASSWORD;
+
     const missingFields = [];
-
-    if (!envVars.PORT) {
-      missingFields.push('PORT');
-    }
-
-    if (!envVars.ADMIN_PASSWORD) {
-      missingFields.push('ADMIN_PASSWORD');
-    }
+    if (!port) missingFields.push('PORT');
+    if (!adminPassword) missingFields.push('ADMIN_PASSWORD');
 
     if (missingFields.length > 0) {
-      console.error('\n❌ ERROR: Required fields missing in .env file!');
+      console.error('\n❌ ERROR: Required fields missing!');
       console.error(`Missing fields: ${missingFields.join(', ')}`);
-      console.error('\nBoth PORT and ADMIN_PASSWORD are required to run the server.');
-      console.error('Example configuration:');
+      console.error('\nBoth PORT and ADMIN_PASSWORD are required (via .env file or environment variables).');
+      console.error('Example .env configuration:');
       console.error('  PORT=8990');
-      console.error('  ADMIN_PASSWORD=your-secure-password\n');
+      console.error('  ADMIN_PASSWORD=your-secure-password');
+      console.error('\nOr pass via environment:');
+      console.error('  PORT=8990 ADMIN_PASSWORD=secret node index.js\n');
       throw new Error(`Required fields missing: ${missingFields.join(', ')}`);
     }
 
     // Set required fields
-    this.port = parseInt(envVars.PORT);
-    this.adminPassword = envVars.ADMIN_PASSWORD;
+    this.port = parseInt(port);
+    this.adminPassword = adminPassword;
 
-    console.log(`[CONFIG] Port: ${this.port}`);
+    const portSource = envVars.PORT ? '.env' : 'environment';
+    console.log(`[CONFIG] Port: ${this.port} (from ${portSource})`);
     console.log(`[CONFIG] Admin panel enabled with password authentication`);
 
     // Clear existing providers
@@ -109,74 +109,113 @@ class Config {
       .filter(key => key.length > 0);
   }
 
+  /**
+   * Parse API keys with disabled state. Keys prefixed with ~ are disabled.
+   * Returns { allKeys: [{key, disabled}], enabledKeys: [key] }
+   */
+  parseApiKeysWithState(keysString) {
+    if (!keysString) {
+      return { allKeys: [], enabledKeys: [] };
+    }
+
+    const allKeys = [];
+    const enabledKeys = [];
+
+    keysString.split(',').forEach(raw => {
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) return;
+
+      if (trimmed.startsWith('~')) {
+        const key = trimmed.substring(1);
+        if (key.length > 0) {
+          allKeys.push({ key, disabled: true });
+        }
+      } else {
+        allKeys.push({ key: trimmed, disabled: false });
+        enabledKeys.push(trimmed);
+      }
+    });
+
+    return { allKeys, enabledKeys };
+  }
+
   parseProviders(envVars) {
     // Parse {API_TYPE}_{PROVIDER}_API_KEYS, {API_TYPE}_{PROVIDER}_BASE_URL, and {API_TYPE}_{PROVIDER}_ACCESS_KEY format
     const providerConfigs = new Map();
 
+    const defaultConfig = () => ({ apiType: null, keys: [], allKeys: [], baseUrl: null, accessKey: null, defaultModel: null, disabled: false });
+
     for (const [key, value] of Object.entries(envVars)) {
       if (key.endsWith('_API_KEYS') && value) {
-        // Extract API_TYPE and PROVIDER from key
         const parts = key.replace('_API_KEYS', '').split('_');
         if (parts.length >= 1) {
           const apiType = parts[0].toLowerCase();
-          // If no provider name specified, use the API type as provider name (default)
           const provider = parts.length === 1 ? apiType : parts.slice(1).join('_').toLowerCase();
-          
+
           if (!providerConfigs.has(provider)) {
-            providerConfigs.set(provider, { apiType, keys: [], baseUrl: null, accessKey: null, defaultModel: null });
+            providerConfigs.set(provider, defaultConfig());
           }
-          
-          providerConfigs.get(provider).keys = this.parseApiKeys(value);
+
+          // Parse keys with disabled state (~ prefix)
+          const { allKeys, enabledKeys } = this.parseApiKeysWithState(value);
+          providerConfigs.get(provider).keys = enabledKeys;
+          providerConfigs.get(provider).allKeys = allKeys;
           providerConfigs.get(provider).apiType = apiType;
         }
       } else if (key.endsWith('_BASE_URL') && value) {
-        // Extract API_TYPE and PROVIDER from key
         const parts = key.replace('_BASE_URL', '').split('_');
         if (parts.length >= 1) {
           const apiType = parts[0].toLowerCase();
-          // If no provider name specified, use the API type as provider name (default)
           const provider = parts.length === 1 ? apiType : parts.slice(1).join('_').toLowerCase();
-          
+
           if (!providerConfigs.has(provider)) {
-            providerConfigs.set(provider, { apiType, keys: [], baseUrl: null, accessKey: null, defaultModel: null });
+            providerConfigs.set(provider, defaultConfig());
           }
-          
+
           providerConfigs.get(provider).baseUrl = value.trim();
         }
       } else if (key.endsWith('_ACCESS_KEY') && value) {
-        // Extract API_TYPE and PROVIDER from key
         const parts = key.replace('_ACCESS_KEY', '').split('_');
         if (parts.length >= 1) {
           const apiType = parts[0].toLowerCase();
-          // If no provider name specified, use the API type as provider name (default)
           const provider = parts.length === 1 ? apiType : parts.slice(1).join('_').toLowerCase();
-          
+
           if (!providerConfigs.has(provider)) {
-            providerConfigs.set(provider, { apiType, keys: [], baseUrl: null, accessKey: null, defaultModel: null });
+            providerConfigs.set(provider, defaultConfig());
           }
-          
+
           providerConfigs.get(provider).accessKey = value.trim();
         }
       } else if (key.endsWith('_DEFAULT_MODEL') && value) {
-        // Extract API_TYPE and PROVIDER from key
         const parts = key.replace('_DEFAULT_MODEL', '').split('_');
         if (parts.length >= 1) {
           const apiType = parts[0].toLowerCase();
-          // If no provider name specified, use the API type as provider name (default)
           const provider = parts.length === 1 ? apiType : parts.slice(1).join('_').toLowerCase();
 
           if (!providerConfigs.has(provider)) {
-            providerConfigs.set(provider, { apiType, keys: [], baseUrl: null, accessKey: null, defaultModel: null });
+            providerConfigs.set(provider, defaultConfig());
           }
 
           providerConfigs.get(provider).defaultModel = value.trim();
+        }
+      } else if (key.endsWith('_DISABLED') && value) {
+        const parts = key.replace('_DISABLED', '').split('_');
+        if (parts.length >= 1) {
+          const apiType = parts[0].toLowerCase();
+          const provider = parts.length === 1 ? apiType : parts.slice(1).join('_').toLowerCase();
+
+          if (!providerConfigs.has(provider)) {
+            providerConfigs.set(provider, defaultConfig());
+          }
+
+          providerConfigs.get(provider).disabled = (value.trim().toLowerCase() === 'true');
         }
       }
     }
 
     // Add valid providers to the main providers map
     for (const [provider, config] of providerConfigs.entries()) {
-      if (config.keys.length > 0) {
+      if (config.allKeys.length > 0) {
         // Set default base URLs if not specified
         if (!config.baseUrl) {
           if (config.apiType === 'openai') {
@@ -185,7 +224,7 @@ class Config {
             config.baseUrl = 'https://generativelanguage.googleapis.com/v1';
           }
         }
-        
+
         this.providers.set(provider, config);
       }
     }
